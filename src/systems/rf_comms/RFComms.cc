@@ -129,6 +129,7 @@ struct RadioState
   /// \brief Accumulation of bytes received in an epoch.
   uint64_t bytesReceivedThisEpoch = 0;
 
+  /// \brief Name of the model associated with the radio.
   std::string name;
 };
 
@@ -236,7 +237,7 @@ RFPower RFComms::Implementation::LogNormalReceivedPower(
   const double kPL = this->rangeConfig.l0 +
     10 * this->rangeConfig.fadingExponent * log10(kRange);
 
-  return {_txPower - kPL, this->rangeConfig.sigma};
+  return {_txPower - kPL, pow(this->rangeConfig.sigma, 2.)};
 }
 
 /////////////////////////////////////////////
@@ -247,7 +248,7 @@ std::tuple<bool, double> RFComms::Implementation::AttemptSend(
 
   // Maintain running window of bytes sent over the last epoch, e.g., 1s.
   while (!_txState.bytesSent.empty() &&
-         _txState.bytesSent.front().first < now - this->epochDuration)
+         _txState.bytesSent.front().first <= now - this->epochDuration)
   {
     _txState.bytesSentThisEpoch -= _txState.bytesSent.front().second;
     _txState.bytesSent.pop_front();
@@ -305,7 +306,7 @@ std::tuple<bool, double> RFComms::Implementation::AttemptSend(
 
   // Maintain running window of bytes received over the last epoch, e.g., 1s.
   while (!_rxState.bytesReceived.empty() &&
-         _rxState.bytesReceived.front().first < now - this->epochDuration)
+         _rxState.bytesReceived.front().first <= now - this->epochDuration)
   {
     _rxState.bytesReceivedThisEpoch -= _rxState.bytesReceived.front().second;
     _rxState.bytesReceived.pop_front();
@@ -445,11 +446,7 @@ void RFComms::Step(
           continue;
 
         auto [sendPacket, rssi] = this->dataPtr->AttemptSend(
-#if GOOGLE_PROTOBUF_VERSION < 3004001
-          itSrc->second, itDst->second, msg->ByteSize());
-#else
-          itSrc->second, itDst->second, msg->ByteSizeLong());
-#endif
+          itSrc->second, itDst->second, msg->data().size());
 
         if (sendPacket)
         {

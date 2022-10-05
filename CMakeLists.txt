@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.10.2 FATAL_ERROR)
 #============================================================================
 # Initialize the project
 #============================================================================
-project(ignition-gazebo6 VERSION 6.11.0)
+project(ignition-gazebo6 VERSION 6.12.0)
 set (GZ_DISTRIBUTION "Fortress")
 
 #============================================================================
@@ -60,7 +60,7 @@ set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
 # as protobuf could be find transitively by any dependency
 set(protobuf_MODULE_COMPATIBLE TRUE)
 
-ign_find_package(sdformat12 REQUIRED VERSION 12.4)
+ign_find_package(sdformat12 REQUIRED VERSION 12.6)
 set(SDF_VER ${sdformat12_VERSION_MAJOR})
 
 #--------------------------------------
