@@ -292,8 +292,9 @@ std::tuple<bool, double> RFComms::Implementation::AttemptSend(
 
   double packetDropProb = 1.0 - exp(_numBytes * log(1 - ber));
 
-  // igndbg << "TX power (dBm): " << this->radioConfig.txPower << "\n" <<
-  //           "RX power (dBm): " << rxPower << "\n" <<
+  // ignwarn << "TX power (dBm): " << this->radioConfig.txPower << "\n" <<
+  //           "RX power (dBm): " << rxPowerDist.mean << "\n" <<
+  //           "RX power (dBm) after Gauss: " << rxPower << "\n" <<
   //           "BER: " << ber << "\n" <<
   //           "# Bytes: " << _numBytes << "\n" <<
   //           "PER: " << packetDropProb << std::endl;
@@ -302,6 +303,8 @@ std::tuple<bool, double> RFComms::Implementation::AttemptSend(
   bool packetReceived = randDraw > packetDropProb;
 
   if (!packetReceived)
+  {
+    ignwarn << "Dropping packet [" << _txState.name << " -> " << _rxState.name << "] prob " << packetDropProb  << "\n" << std::endl;
     return std::make_tuple(false, std::numeric_limits<double>::lowest());
 
   // Maintain running window of bytes received over the last epoch, e.g., 1s.
