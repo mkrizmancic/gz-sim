@@ -306,7 +306,7 @@ std::tuple<bool, double> RFComms::Implementation::AttemptSend(
   {
     ignwarn << "Dropping packet [" << _txState.name << " -> " << _rxState.name << "] prob " << packetDropProb  << "\n" << std::endl;
     return std::make_tuple(false, std::numeric_limits<double>::lowest());
-
+  }
   // Maintain running window of bytes received over the last epoch, e.g., 1s.
   while (!_rxState.bytesReceived.empty() &&
          _rxState.bytesReceived.front().first <= now - this->epochDuration)
