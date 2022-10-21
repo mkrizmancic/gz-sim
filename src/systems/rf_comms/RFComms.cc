@@ -198,6 +198,9 @@ class ignition::gazebo::systems::RFComms::Implementation
   /// \brief Radio configuration.
   public: RadioConfiguration radioConfig;
 
+  /// \brief Manually set fixed drop probability.
+  public: double dropProb = -1.0;
+
   /// \brief A map where the key is the address and the value its radio state.
   public: std::unordered_map<std::string, RadioState> radioStates;
 
@@ -265,8 +268,10 @@ std::tuple<bool, double> RFComms::Implementation::AttemptSend(
   // Check current epoch bitrate vs capacity and fail to send accordingly
   if (bitsSent > this->radioConfig.capacity * this->epochDuration)
   {
-    ignwarn << "Bitrate limited: [" << _txState.name << "] " << bitsSent << "bits sent (limit: "
-            << this->radioConfig.capacity * this->epochDuration << ")" << std::endl;
+    ignwarn << "Bitrate limited: [" << _txState.name << "] " << bitsSent
+            << " bits sent (limit: "
+            << this->radioConfig.capacity * this->epochDuration << ")"
+            << std::endl;
     return std::make_tuple(false, std::numeric_limits<double>::lowest());
   }
 
@@ -274,69 +279,89 @@ std::tuple<bool, double> RFComms::Implementation::AttemptSend(
   _txState.bytesSent.push_back(std::make_pair(now, _numBytes));
   _txState.bytesSentThisEpoch += _numBytes;
 
-  // Get the received power based on TX power and position of each node.
-  auto rxPowerDist =
-    this->LogNormalReceivedPower(this->radioConfig.txPower, _txState, _rxState);
-
-  double rxPower = rxPowerDist.mean;
-  if (rxPowerDist.variance > 0.0)
+  // Using fixed drop probability.
+  if (this->dropProb > -1.0)
   {
-    std::normal_distribution<> d{rxPowerDist.mean, sqrt(rxPowerDist.variance)};
-    rxPower = d(this->rndEngine);
+    std::uniform_real_distribution<double> d(0, 1);
+    double randEvent = d(this->rndEngine);
+
+    if (randEvent < this->dropProb)
+    {
+      ignwarn << "Dropping packet [" << _txState.name << " -> " << _rxState.name << "] prob " << randEvent  << "\n" << std::endl;
+      return std::make_tuple(false, std::numeric_limits<double>::lowest());
+    }
+    else
+      return std::make_tuple(true, randEvent);
   }
-
-  // Based on rx_power, noise value, and modulation, compute the bit
-  // error rate (BER).
-  double ber = this->QPSKPowerToBER(
-    this->DbmToPow(rxPower), this->DbmToPow(this->radioConfig.noiseFloor));
-
-  double packetDropProb = 1.0 - exp(_numBytes * log(1 - ber));
-
-  // ignwarn << "TX power (dBm): " << this->radioConfig.txPower << "\n" <<
-  //           "RX power (dBm): " << rxPowerDist.mean << "\n" <<
-  //           "RX power (dBm) after Gauss: " << rxPower << "\n" <<
-  //           "BER: " << ber << "\n" <<
-  //           "# Bytes: " << _numBytes << "\n" <<
-  //           "PER: " << packetDropProb << std::endl;
-
-  double randDraw = ignition::math::Rand::DblUniform();
-  bool packetReceived = randDraw > packetDropProb;
-
-  if (!packetReceived)
+  // Using drop probability based on distance.
+  else
   {
-    ignwarn << "Dropping packet [" << _txState.name << " -> " << _rxState.name << "] prob " << packetDropProb  << "\n" << std::endl;
-    return std::make_tuple(false, std::numeric_limits<double>::lowest());
+    // Get the received power based on TX power and position of each node.
+    auto rxPowerDist =
+      this->LogNormalReceivedPower(this->radioConfig.txPower, _txState, _rxState);
+
+    double rxPower = rxPowerDist.mean;
+    if (rxPowerDist.variance > 0.0)
+    {
+      std::normal_distribution<> d{rxPowerDist.mean, sqrt(rxPowerDist.variance)};
+      rxPower = d(this->rndEngine);
+    }
+
+    // Based on rx_power, noise value, and modulation, compute the bit
+    // error rate (BER).
+    double ber = this->QPSKPowerToBER(
+      this->DbmToPow(rxPower), this->DbmToPow(this->radioConfig.noiseFloor));
+
+    double packetDropProb = 1.0 - exp(_numBytes * log(1 - ber));
+
+    // ignwarn << "TX power (dBm): " << this->radioConfig.txPower << "\n" <<
+    //           "RX power (dBm): " << rxPowerDist.mean << "\n" <<
+    //           "RX power (dBm) after Gauss: " << rxPower << "\n" <<
+    //           "BER: " << ber << "\n" <<
+    //           "# Bytes: " << _numBytes << "\n" <<
+    //           "PER: " << packetDropProb << std::endl;
+
+    double randDraw = ignition::math::Rand::DblUniform();
+    bool packetReceived = randDraw > packetDropProb;
+
+    if (!packetReceived)
+    {
+      ignwarn << "Dropping packet [" << _txState.name << " -> " << _rxState.name << "] prob " << packetDropProb  << "\n" << std::endl;
+      return std::make_tuple(false, std::numeric_limits<double>::lowest());
+    }
+
+    // Maintain running window of bytes received over the last epoch, e.g., 1s.
+    while (!_rxState.bytesReceived.empty() &&
+          _rxState.bytesReceived.front().first <= now - this->epochDuration)
+    {
+      _rxState.bytesReceivedThisEpoch -= _rxState.bytesReceived.front().second;
+      _rxState.bytesReceived.pop_front();
+    }
+
+    // igndbg << "bytes received: " << _rxState.bytesReceivedThisEpoch
+    //        << " + " << _numBytes
+    //       << " = " << _rxState.bytesReceivedThisEpoch + _numBytes << std::endl;
+
+    // Compute prospective accumulated bits along with time window
+    // (including this packet).
+    double bitsReceived = (_rxState.bytesReceivedThisEpoch + _numBytes) * 8;
+
+    // Check current epoch bitrate vs capacity and fail to send accordingly.
+    if (bitsReceived > this->radioConfig.capacity * this->epochDuration)
+    {
+      ignwarn << "Bitrate limited: [" << _rxState.name << "] " <<  bitsReceived
+              << " bits received (limit: "
+              << this->radioConfig.capacity * this->epochDuration << ")"
+              << std::endl;
+      return std::make_tuple(false, std::numeric_limits<double>::lowest());
+    }
+
+    // Record these bytes.
+    _rxState.bytesReceived.push_back(std::make_pair(now, _numBytes));
+    _rxState.bytesReceivedThisEpoch += _numBytes;
+
+    return std::make_tuple(true, rxPower);
   }
-  // Maintain running window of bytes received over the last epoch, e.g., 1s.
-  while (!_rxState.bytesReceived.empty() &&
-         _rxState.bytesReceived.front().first <= now - this->epochDuration)
-  {
-    _rxState.bytesReceivedThisEpoch -= _rxState.bytesReceived.front().second;
-    _rxState.bytesReceived.pop_front();
-  }
-
-  // igndbg << "bytes received: " << _rxState.bytesReceivedThisEpoch
-  //        << " + " << _numBytes
-  //       << " = " << _rxState.bytesReceivedThisEpoch + _numBytes << std::endl;
-
-  // Compute prospective accumulated bits along with time window
-  // (including this packet).
-  double bitsReceived = (_rxState.bytesReceivedThisEpoch + _numBytes) * 8;
-
-  // Check current epoch bitrate vs capacity and fail to send accordingly.
-  if (bitsReceived > this->radioConfig.capacity * this->epochDuration)
-  {
-    ignwarn << "Bitrate limited: [" << _rxState.name << "] " <<  bitsReceived
-            << "bits received (limit: "
-            << this->radioConfig.capacity * this->epochDuration << ")" << std::endl;
-    return std::make_tuple(false, std::numeric_limits<double>::lowest());
-  }
-
-  // Record these bytes.
-  _rxState.bytesReceived.push_back(std::make_pair(now, _numBytes));
-  _rxState.bytesReceivedThisEpoch += _numBytes;
-
-  return std::make_tuple(true, rxPower);
 }
 
 //////////////////////////////////////////////////
@@ -388,11 +413,19 @@ void RFComms::Load(const Entity &/*_entity*/,
         this->dataPtr->radioConfig.noiseFloor).first;
   }
 
+  if (_sdf->HasElement("drop_probability"))
+  {
+    this->dataPtr->dropProb = 
+      _sdf->Get<double>("drop_probability", this->dataPtr->dropProb).first;
+  }
+
   igndbg << "Range configuration:" << std::endl
          << this->dataPtr->rangeConfig << std::endl;
 
   igndbg << "Radio configuration:" << std::endl
          << this->dataPtr->radioConfig << std::endl;
+
+  igndbg << "Manual drop probability:" << this->dataPtr->dropProb << std::endl;
 }
 
 //////////////////////////////////////////////////
